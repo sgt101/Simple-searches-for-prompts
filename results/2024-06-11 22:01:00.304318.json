@@ -1,0 +1,2 @@
+[["pruning threshold", "0"], ["pruning delay", "100"], ["breadth", "1"], ["max demos", 0], ["sparsity", 0.0], ["model name", "mistral"], ["metric name", "sentence similarity multi-qa-mpnet-base-dot-v1"], ["algorithm", "tree search"], ["training set size", "200"], ["run date ", "2024-06-11 22:01:00.304318"]]
+[71.38120234012604]

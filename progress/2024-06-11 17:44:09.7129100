@@ -1,0 +1,1 @@
+[["highest_so_far", [0]], ["highest_fitness", 0.32865628103415173], ["seeds", [[0]]], ["iteration", 0], ["pruning_threshold", 0], ["pruning_delay", 100], ["sparsity_demos", 1], ["breadth", 1], ["max_rounds", 1], ["data_set_name", "code_search_net"], ["model_name", "llama3"]]

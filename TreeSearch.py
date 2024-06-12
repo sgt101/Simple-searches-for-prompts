@@ -8,9 +8,9 @@ from time import sleep
 #from tqdm import tqdm_notebook as tqdm
 from perc import Perc
 import datetime
+from pathlib import Path
 
 #import libraries for application
-import dsp
 import dspy
 from dspy.primitives import Example
 
@@ -30,7 +30,12 @@ class TreeSearch(Teleprompter):
     _max_rounds=50
     _model = None
     _system_prompt = None
-    
+    _results_file = "results" #just a placeholder until it's set later 
+    _run_start = None
+    _metric_name = None
+    _model_name = None 
+    _data_set_name =None
+    _default_prompt =None
     
     def __init__(
         self,
@@ -42,7 +47,10 @@ class TreeSearch(Teleprompter):
         max_labeled_demos=16,
         sparsity_demos=0.5,
         breadth = 10,
-        max_rounds=5
+        max_rounds=5,
+        model_name = None,
+        metric_name = None, 
+        data_set_name = None
         ):
         """
         A tree search type optimiser for prompts. 
@@ -82,9 +90,11 @@ class TreeSearch(Teleprompter):
         self._breadth = breadth
         self._max_rounds=max_rounds
         self._model = model
-        self._system_prompt = "You are a software document writer. The following examples are templates for you to use, then there will be a java function for you to document using the template styles "
-    
-
+        self._system_prompt = "You are a software document writer. The following examples are templates for you to use, then there will be a java function for you to document using the template styles. Reply with the approporate documentation" 
+        self._default_prompt = "You are a software document writer. There will be a java function for you to document using the template styles. Reply with the approporate documentation" 
+        self._model_name = model_name
+        self._metric_name = metric_name
+        self._data_set_name = data_set_name
     
     def stepSearch (self,seeds, fitness, highest_so_far, highest_fitness):
         """
@@ -109,8 +119,9 @@ class TreeSearch(Teleprompter):
             if fitness[n]==0.0: #pruned
                 seeds[n]=highest_so_far # this problem is too hard to exhaust the space, so optimise on the best
             seed=seeds[n] #search on it regardless
-            x = random.randrange(len(seed))
-            seed[x]=random.randrange(len(self._training_set))
+            if (len(seed)>0): #permutation opperator; change one of the elements of the set,if the set is empty - don't do this. 
+                x = random.randrange(len(seed))
+                seed[x]=random.randrange(len(self._training_set))
         return (seeds)
 
 
@@ -143,20 +154,18 @@ class TreeSearch(Teleprompter):
         count=1
         total_fitness=0.0
         for example in Perc (evaluation_set):
-                #unfortunately responses are inconsistent - need to flatten to allow different models 
-                #this is for llama3 
-                if (random.random()<0.05):break # just for testing 
-                
-                response = self._model.request(prompt)["choices"][0]['message']['content']
-                example_fitness = self._metric (response, example.answer)
-                total_fitness = total_fitness + example_fitness
-                # if you've done enough examples to have a fair estimate of the quality of this one 
-                # then check to see if it's on track to get close to the highest_fitness - a threshold factor
-                # so we're not demanding that the estimate is that it'll be the fittest, but we are 
-                # saying that it should be within x% of the fittest. 
-                if (count > self._pruning_delay) & (total_fitness/float(count) < highest_fitness - self._pruning_threshold):
-                    total_fitness = 0.0 
-                    break 
+            #unfortunately responses are inconsistent - need to flatten to allow different models 
+            #this is for llama3 
+            response = self._model.request(prompt)["choices"][0]['message']['content']
+            example_fitness = self._metric (response, example.answer)
+            total_fitness = total_fitness + example_fitness
+            # if you've done enough examples to have a fair estimate of the quality of this one 
+            # then check to see if it's on track to get close to the highest_fitness - a threshold factor
+            # so we're not demanding that the estimate is that it'll be the fittest, but we are 
+            # saying that it should be within x% of the fittest. 
+            if (count > self._pruning_delay) & (total_fitness/float(count) < highest_fitness - self._pruning_threshold):
+                total_fitness = 0.0 
+                break 
                 count=count+1
         return (total_fitness/float(count))
     
@@ -165,16 +174,31 @@ class TreeSearch(Teleprompter):
         
     def renderPrompt(self,prompt, candidate, evaluation_set=_training_set):
         """look up the elements in the candidate and create a prompt that uses them. 
+      
         Args:
             prompt (String ): intially _system_prompt 
             candidate (List): an list of integers that each reference a member of the evaluation_set
             evaluation_set (List): examples to be used to do evaluation, defaults to training_set, but could be test_set 
         """
+        if (len(candidate)==0): #sometimes the best found set is the empty set 
+            return(self._default_prompt)
         for n in range (len(candidate)):
-            seed = candidate[n] #get the right candidate
-            prompt = prompt + "example code is: " + evaluation_set[candidate[n]].question + "example documentation is: " + evaluation_set[candidate[n]].answer +"\n"
+            item = candidate[n] #get the right candidate
+            prompt = prompt + "example code is: " + evaluation_set[item].question + "example documentation is: " + evaluation_set[item].answer +"\n"
         return (prompt)
     
+    
+    def saveResults(self, results): 
+       """
+       just store all the fitness results for a candidate. In the future the data set might need to be stored as well. 
+       """ 
+       file = open(self._results_file, 'a')
+       file.write (json.dumps(results))
+       file.write ('\n')
+       file.close()
+        
+        
+        
            
     def evaluateAll(self,seeds, highest_so_far, highest_fitness,evaluation_set):
         """
@@ -184,11 +208,15 @@ class TreeSearch(Teleprompter):
         candidate_fitness =[]
         for n in Perc(range(self._breadth)):
             prompt = self.renderPrompt(self._system_prompt,seeds[n], evaluation_set)
+            #need to write results
             fitness = self.evaluateCandidate(prompt, highest_fitness,evaluation_set)
             candidate_fitness.append(fitness)
             if (fitness>highest_fitness) : 
                 highest_so_far = seeds[n]
                 highest_fitness = fitness
+        # we have a list of fitness outcomes, we could do stats here, or we can just save them and then do stats off line. 
+        self.saveResults(candidate_fitness)
+        
         return (candidate_fitness, highest_so_far, highest_fitness)
             
             
@@ -219,6 +247,8 @@ class TreeSearch(Teleprompter):
         to_make_json.append(["sparsity_demos",self._sparsity_demos])
         to_make_json.append(["breadth",self._breadth])
         to_make_json.append(["max_rounds", self._max_rounds])
+        to_make_json.append(["data_set_name", self._data_set_name])
+        to_make_json.append(["model_name",self._model_name])
         file = open(filename, 'w')
         file.write (json.dumps(to_make_json))
         
@@ -265,8 +295,9 @@ class TreeSearch(Teleprompter):
         for count in Perc(range(self._max_rounds)):
             seeds = self.stepSearch(seeds,fitness, highest_so_far, highest_fitness)
             fitness, highest_so_far, highest_fitness = self.evaluateAll(seeds, highest_so_far, highest_fitness,self._training_set)
-            filename = "logs" + str(datetime.datetime.now()) + str(count) 
+            filename= Path.cwd().joinpath("progress", str(self._run_start) + str(count))
             self.save(highest_so_far,highest_fitness,seeds, count,filename)
+            
             print ("round " + str(count) + "fitness = " +  str(highest_fitness))
             if (self.allPruned(fitness)): 
                 #print ("all pruned")
@@ -279,6 +310,28 @@ class TreeSearch(Teleprompter):
     highest_so_far=[]
     highest_fitness = 0.0
   
+    def writeParams(self): 
+        """used to dump the parameters for this run into the header of the results file so that we know what we are analysing 
+        """
+        params =[]
+        params.append(["pruning threshold", str(self._pruning_threshold)])
+        params.append(["pruning delay",str(self._pruning_delay)])
+        params.append(["breadth", str(self._breadth)])
+        params.append(["max demos", self._max_labeled_demos])
+        params.append(["sparsity", self._sparsity_demos])
+        params.append(["model name", self._model_name]) #TODO placeholder
+        params.append(["metric name", self._metric_name])
+        params.append(["algorithm", "tree search"]) #TODO placeholder
+        params.append(["training set size", str(len(self._training_set))])
+        params.append(["run date ", self._run_start])
+        
+        print(params)
+        file = open(self._results_file,'w')
+        file.write(json.dumps(params))
+        file.write('\n')
+        file.close()
+        
+       
         
         
     def compile(self,metric=None, training_set = None): 
@@ -292,7 +345,11 @@ class TreeSearch(Teleprompter):
         if (self._training_set==None):
             print ("you need to provide a training set to search")
             return()
+        self._run_start = str(datetime.datetime.now()) #yup, gotta start sometime... 
+        self._results_file = Path.cwd().joinpath("results", str(self._run_start)+".json")
+        self.writeParams ()
         highest_so_far, highest_fitness, final_candidates = self.search()
+        print(highest_so_far)
         print (self.renderPrompt(self._system_prompt,highest_so_far))
         self.highest_so_far = highest_so_far
         self.highest_fitness = highest_fitness
